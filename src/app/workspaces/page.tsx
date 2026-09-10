@@ -22,17 +22,10 @@ import { useToast } from '@/components/Toast';
 export default function WorkspacesPage() {
   const { showToast } = useToast();
 
-  // Instant SWR state: initialize immediately from client cache so tab switching is instantaneous
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
-    return api.getCachedWorkspaces() || [];
-  });
-  const [drives, setDrives] = useState<Drive[]>(() => {
-    return api.getCachedDrives() || [];
-  });
-  const [loading, setLoading] = useState<boolean>(() => {
-    const cached = api.getCachedWorkspaces();
-    return !cached || cached.length === 0;
-  });
+  // Safe client hydration states
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [drives, setDrives] = useState<Drive[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');

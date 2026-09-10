@@ -88,14 +88,9 @@ function VSSACloudApp() {
   // Active Selected Drive UUID (allows multi-drive switching)
   const [selectedDriveUuid, setSelectedDriveUuid] = useState<string | null>(null);
 
-  // Backend Data States with Instant SWR Cache
-  const [drives, setDrives] = useState<Drive[]>(() => {
-    return api.getCachedDrives() || [];
-  });
-  const [drivesLoading, setDrivesLoading] = useState(() => {
-    const c = api.getCachedDrives();
-    return !c || c.length === 0;
-  });
+  // Backend Data States with Safe Client Hydration
+  const [drives, setDrives] = useState<Drive[]>([]);
+  const [drivesLoading, setDrivesLoading] = useState(true);
   const [drivesError, setDrivesError] = useState<string | null>(null);
 
   // Compute active drive and UUID with fallback to first online or online_readonly drive
@@ -121,15 +116,8 @@ function VSSACloudApp() {
     }
   }, [activeDriveUuid]);
 
-  const [items, setItems] = useState<StorageItem[]>(() => {
-    const uuid = api.getActiveDriveUuid();
-    return uuid ? api.getCachedFiles(uuid, currentPath) || [] : [];
-  });
-  const [filesLoading, setFilesLoading] = useState(() => {
-    const uuid = api.getActiveDriveUuid();
-    const c = uuid ? api.getCachedFiles(uuid, currentPath) : null;
-    return !c;
-  });
+  const [items, setItems] = useState<StorageItem[]>([]);
+  const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState<string | null>(null);
 
   // Deletion State

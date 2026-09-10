@@ -11,13 +11,15 @@ interface StorageCardProps {
 }
 
 export function StorageCard({ summary, isOnline, driveCount }: StorageCardProps) {
-  // Determine greeting based on current time
-  const getGreeting = () => {
+  // Determine greeting safely on client to prevent SSR hydration mismatch
+  const [greeting, setGreeting] = React.useState('Welcome');
+
+  React.useEffect(() => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
-    return 'Good evening';
-  };
+    if (hour < 12) setGreeting('Good morning');
+    else if (hour < 18) setGreeting('Good afternoon');
+    else setGreeting('Good evening');
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -25,8 +27,11 @@ export function StorageCard({ summary, isOnline, driveCount }: StorageCardProps)
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-1">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-neutral-900">
-              {getGreeting()}
+            <h1
+              suppressHydrationWarning
+              className="text-xl sm:text-2xl font-semibold tracking-tight text-neutral-900"
+            >
+              {greeting}
             </h1>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-neutral-100 text-neutral-700 border border-neutral-200/60">
               <Sparkles className="w-3 h-3 text-amber-500" />

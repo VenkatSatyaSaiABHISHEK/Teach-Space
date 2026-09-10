@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 function getTargetBaseUrl(req: NextRequest): string {
+  // If request is for TechStorage public API route (/api/storage/...), prefer NEXT_PUBLIC_TECHSTORAGE_API_URL if configured
+  const pathname = req.nextUrl.pathname;
+  if (pathname.includes('/api/storage') && process.env.NEXT_PUBLIC_TECHSTORAGE_API_URL) {
+    let techBase = process.env.NEXT_PUBLIC_TECHSTORAGE_API_URL.trim().replace(/\/+$/, '').replace(/\/api\/storage$/, '');
+    if (techBase) {
+      if (techBase.startsWith('http://') && !techBase.includes('localhost') && !techBase.includes('127.0.0.1') && !techBase.match(/^http:\/\/\d+\.\d+\.\d+\.\d+/)) {
+        techBase = techBase.replace('http://', 'https://');
+      }
+      return techBase;
+    }
+  }
+
   // Check if client passed custom target via header
   const customTarget = req.headers.get('x-vssa-target-url');
   let base = customTarget || process.env.NEXT_PUBLIC_API_URL || 'https://cloud.vssa.site';
@@ -20,7 +32,7 @@ export async function OPTIONS() {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE, PATCH',
       'Access-Control-Allow-Headers': '*',
     },
   });
@@ -129,6 +141,11 @@ export async function GET(
     const rangeHeader = req.headers.get('range');
     if (rangeHeader) {
       upstreamHeaders['Range'] = rangeHeader;
+    }
+
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      upstreamHeaders['Authorization'] = authHeader;
     }
 
     let upstreamRes: Response;
@@ -286,6 +303,11 @@ export async function POST(
       headers['Content-Type'] = contentType;
     }
 
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     // Buffer the body into a reusable ArrayBuffer so it can be re-sent safely if
     // the socket resets or the Raspberry Pi takes a few seconds to spin up.
     let bodyBuffer: BodyInit | null = null;
@@ -370,6 +392,7 @@ export async function DELETE(
         method: 'DELETE',
         headers: {
           Accept: req.headers.get('accept') || 'application/json',
+          ...(req.headers.get('authorization') ? { Authorization: req.headers.get('authorization')! } : {}),
         },
         timeoutMs: 35000,
         maxRetries: 2,
@@ -412,6 +435,96 @@ export async function DELETE(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Proxy connection failed';
     console.error(`[Proxy DELETE error] ${targetUrl}: ${message}`);
+    return NextResponse.json(
+      { detail: `Cannot connect to Raspberry Pi server at ${targetBase}: ${message}` },
+      { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
+    );
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ path: string[] }> }
+) {
+  const { path } = await context.params;
+  const targetBase = getTargetBaseUrl(req);
+  const pathStr = (path || []).join('/');
+
+  const searchParams = req.nextUrl.search;
+  const targetUrl = `${targetBase}/${pathStr}${searchParams}`;
+
+  try {
+    const contentType = req.headers.get('content-type') || '';
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+    };
+
+    if (contentType) {
+      headers['Content-Type'] = contentType;
+    }
+
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
+    let bodyBuffer: BodyInit | null = null;
+    try {
+      const rawArrayBuffer = await req.arrayBuffer();
+      if (rawArrayBuffer && rawArrayBuffer.byteLength > 0) {
+        bodyBuffer = rawArrayBuffer;
+      }
+    } catch {
+      bodyBuffer = null;
+    }
+
+    let upstreamRes: Response;
+    try {
+      upstreamRes = await fetchWithUpstreamRetry(targetUrl, {
+        method: 'PATCH',
+        headers,
+        body: bodyBuffer,
+        timeoutMs: 35000,
+        maxRetries: 2,
+      });
+    } catch (networkErr: unknown) {
+      const msg = networkErr instanceof Error ? networkErr.message : 'Network error';
+      console.error(`[Proxy PATCH failed] ${targetUrl}: ${msg}`);
+      return NextResponse.json(
+        { detail: `Cannot connect to Raspberry Pi server at ${targetBase}: ${msg}` },
+        { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }
+      );
+    }
+
+    const resContentType = upstreamRes.headers.get('content-type') || 'application/json';
+
+    if (!upstreamRes.ok && (upstreamRes.status === 502 || upstreamRes.status === 504 || upstreamRes.status === 530 || resContentType.includes('text/html'))) {
+      console.warn(`[Proxy PATCH] Upstream failed with HTTP ${upstreamRes.status} for ${targetUrl}`);
+      const cleanMsg =
+        upstreamRes.status === 502
+          ? `Storage server at ${targetBase} is busy or waking up (HTTP 502 Bad Gateway). Please try again.`
+          : upstreamRes.status === 504
+          ? `Storage server at ${targetBase} timed out (HTTP 504 Gateway Timeout).`
+          : upstreamRes.status === 530
+          ? `Raspberry Pi Cloudflare Tunnel is reconnecting (HTTP 530 / Error 1033). Please verify the device is powered on.`
+          : `Storage server returned HTTP ${upstreamRes.status}`;
+
+      return NextResponse.json(
+        { detail: cleanMsg, status: upstreamRes.status },
+        { status: upstreamRes.status, headers: { 'Access-Control-Allow-Origin': '*' } }
+      );
+    }
+
+    return new NextResponse(upstreamRes.body, {
+      status: upstreamRes.status,
+      headers: {
+        'Content-Type': resContentType,
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Proxy connection failed';
+    console.error(`[Proxy PATCH error] ${targetUrl}: ${message}`);
     return NextResponse.json(
       { detail: `Cannot connect to Raspberry Pi server at ${targetBase}: ${message}` },
       { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } }

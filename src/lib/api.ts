@@ -6,6 +6,11 @@ import {
   ShowcaseResponse,
   ShowcaseContentResponse,
   ShowcaseFilesResponse,
+  TechStorageItem,
+  TechStoragePermissions,
+  CreateTechStorageParams,
+  CreateTechStorageResponse,
+  UpdateTechStorageParams,
 } from '@/types';
 
 // Default to Cloudflare Tunnel production URL or configured env var
@@ -51,6 +56,30 @@ export function setApiBaseUrl(url: string | null): void {
       window.localStorage.removeItem('vssa_api_endpoint');
     }
   }
+}
+
+/**
+ * Public API Base URL dedicated for external TechStorage API callers.
+ * Configured via NEXT_PUBLIC_TECHSTORAGE_API_URL.
+ * Supports development (e.g. http://127.0.0.1:8000) and production (e.g. https://cloud.vssa.site).
+ * Falls back to getApiBaseUrl() (or NEXT_PUBLIC_API_URL / DEFAULT_API_URL) for backward compatibility.
+ */
+export function getTechStoragePublicApiUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_TECHSTORAGE_API_URL;
+  if (envUrl && envUrl.trim()) {
+    let clean = envUrl.trim().replace(/\/+$/, '').replace(/\/api\/storage$/, '');
+    return normalizeApiUrl(clean);
+  }
+  return getApiBaseUrl();
+}
+
+/**
+ * Constructs the public API endpoint for a given TechStorage space:
+ * e.g. ${NEXT_PUBLIC_TECHSTORAGE_API_URL}/api/storage/${storageId}
+ */
+export function getTechStorageSpaceApiUrl(storageId: string): string {
+  const base = getTechStoragePublicApiUrl();
+  return `${base}/api/storage/${storageId}`;
 }
 
 const PROTECTED_PATHS_KEY = 'vssa_protected_paths';
@@ -376,8 +405,11 @@ export function parseApiError(error: unknown, defaultMessage = 'An unexpected er
       if (d.includes('already exists') || d.includes('exists')) {
         return 'A file or folder with this name already exists.';
       }
+      if (d.includes('storage space not found') || d.includes('storage not found')) {
+        return 'This Storage Space could not be found.';
+      }
       if (d.includes('not found')) {
-        return 'This folder or file could not be found.';
+        return 'The requested item could not be found.';
       }
       if (d.includes('password') && (d.includes('incorrect') || d.includes('wrong') || d.includes('invalid'))) {
         return 'Incorrect password. Please try again.';
@@ -393,12 +425,23 @@ export function parseApiError(error: unknown, defaultMessage = 'An unexpected er
     if (Array.isArray(err.detail) && err.detail.length > 0 && err.detail[0]?.msg) {
       return err.detail[0].msg;
     }
+    if (typeof err.detail === 'object' && err.detail !== null && !Array.isArray(err.detail)) {
+      const detailObj = err.detail as { error?: string; message?: string };
+      if (detailObj.error === 'INVALID_API_KEY') return detailObj.message || 'Invalid or missing API key.';
+      if (detailObj.error === 'PERMISSION_DENIED') return detailObj.message || 'Permission denied for this operation.';
+      if (detailObj.error === 'STORAGE_OFFLINE') return 'The physical storage drive is currently disconnected.';
+      if (detailObj.error === 'RATE_LIMITED') return 'Rate limit exceeded. Please wait before making more requests.';
+      if (detailObj.message) return detailObj.message;
+    }
   }
 
-  if (err.status === 404) return 'The requested file or folder was not found.';
-  if (err.status === 401 || err.status === 403) return 'Incorrect password. Please try again.';
+  if (err.status === 401) return 'Invalid or missing API key.';
+  if (err.status === 403) return 'Permission denied for this action.';
+  if (err.status === 404) return 'The requested resource, storage space, or file was not found.';
+  if (err.status === 409) return 'A resource, file, or folder with this name already exists.';
   if (err.status === 413) return 'File is larger than the 50 MB upload limit.';
-  if (err.status === 503) return 'This storage drive is currently unavailable.';
+  if (err.status === 429) return 'Rate limit exceeded. Please wait before retrying.';
+  if (err.status === 503) return 'The physical storage drive is currently disconnected.';
   if (err.status === 502 || err.status === 504) {
     return 'The storage server is busy or waking up (HTTP 502). Please retry in a few moments.';
   }
@@ -433,6 +476,14 @@ export const api = {
 
   setCachedWorkspaces(workspaces: Workspace[]): void {
     setClientCache('workspaces', workspaces);
+  },
+
+  getCachedTechStorages(): TechStorageItem[] | null {
+    return getClientCache<TechStorageItem[]>('techstorages', 300000);
+  },
+
+  setCachedTechStorages(storages: TechStorageItem[]): void {
+    setClientCache('techstorages', storages);
   },
 
   getCachedFiles(driveUuid: string, path = ''): StorageItem[] | null {
@@ -1260,6 +1311,187 @@ export const api = {
     const searchParams = new URLSearchParams();
     searchParams.set('path', fullPath.trim().replace(/^\/+/, ''));
     return buildEndpointUrl(`download/${encodeURIComponent(driveUuid)}`, searchParams.toString());
+  },
+
+  /**
+   * GET /techstorage
+   * Retrieves list of all registered TechStorage spaces
+   */
+  async getTechStorages(): Promise<TechStorageItem[]> {
+    try {
+      const url = buildEndpointUrl('techstorage');
+      const res = await resilientFetch(url, {
+        method: 'GET',
+        headers: getRequestHeaders(),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(parseApiError(errJson, `Failed to load TechStorage spaces (${res.status})`));
+      }
+
+      const raw = await res.json();
+      const list: TechStorageItem[] = Array.isArray(raw) ? raw : (raw.storages || []);
+      api.setCachedTechStorages(list);
+      return list;
+    } catch (err) {
+      throw new Error(parseApiError(err, 'Failed to fetch TechStorage spaces'));
+    }
+  },
+
+  /**
+   * GET /techstorage/{storage_id}
+   * Retrieves specific TechStorage space details
+   */
+  async getTechStorage(storageId: string): Promise<TechStorageItem> {
+    try {
+      const url = buildEndpointUrl(`techstorage/${encodeURIComponent(storageId)}`);
+      const res = await resilientFetch(url, {
+        method: 'GET',
+        headers: getRequestHeaders(),
+      });
+
+      if (res.ok) {
+        return await res.json();
+      }
+
+      // If single item endpoint returns 404 (such as revoked / disabled spaces), check storages list
+      if (res.status === 404) {
+        const allStorages = await api.getTechStorages().catch(() => []);
+        const found = allStorages.find((s) => s.storage_id === storageId);
+        if (found) {
+          return found;
+        }
+      }
+
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(parseApiError(errJson, `Storage Space not found (${res.status})`));
+    } catch (err) {
+      // Check cached list fallback on network or 404 error
+      const cached = api.getCachedTechStorages();
+      const found = cached?.find((s) => s.storage_id === storageId);
+      if (found) return found;
+
+      throw new Error(parseApiError(err, 'Storage Space not found'));
+    }
+  },
+
+  /**
+   * POST /techstorage
+   * Creates a new TechStorage space and returns single-use API key
+   */
+  async createTechStorage(params: CreateTechStorageParams): Promise<CreateTechStorageResponse> {
+    const searchParams = new URLSearchParams();
+    searchParams.set('name', params.name.trim());
+    searchParams.set('drive_uuid', params.drive_uuid);
+    if (params.folder_path !== undefined) {
+      searchParams.set('folder_path', params.folder_path.trim().replace(/^\/+/, ''));
+    }
+    if (params.read_enabled !== undefined) searchParams.set('read_enabled', String(params.read_enabled));
+    if (params.upload_enabled !== undefined) searchParams.set('upload_enabled', String(params.upload_enabled));
+    if (params.create_folder_enabled !== undefined) searchParams.set('create_folder_enabled', String(params.create_folder_enabled));
+    if (params.delete_enabled !== undefined) searchParams.set('delete_enabled', String(params.delete_enabled));
+    if (params.rate_limit !== undefined) searchParams.set('rate_limit', String(params.rate_limit));
+    if (params.rate_window !== undefined) searchParams.set('rate_window', String(params.rate_window));
+
+    const url = buildEndpointUrl('techstorage', searchParams.toString());
+
+    try {
+      const res = await resilientFetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(parseApiError(errJson, `Failed to create TechStorage space (${res.status})`));
+      }
+
+      api.invalidateCache('techstorages');
+      return await res.json();
+    } catch (err) {
+      throw new Error(parseApiError(err, 'Failed to create TechStorage space'));
+    }
+  },
+
+  /**
+   * PATCH /techstorage/{storage_id}
+   * Updates permissions, name, or rate limits of a TechStorage space
+   */
+  async updateTechStorage(storageId: string, params: UpdateTechStorageParams): Promise<TechStorageItem> {
+    const searchParams = new URLSearchParams();
+    if (params.name !== undefined) searchParams.set('name', params.name.trim());
+    if (params.read_enabled !== undefined) searchParams.set('read_enabled', String(params.read_enabled));
+    if (params.upload_enabled !== undefined) searchParams.set('upload_enabled', String(params.upload_enabled));
+    if (params.create_folder_enabled !== undefined) searchParams.set('create_folder_enabled', String(params.create_folder_enabled));
+    if (params.delete_enabled !== undefined) searchParams.set('delete_enabled', String(params.delete_enabled));
+    if (params.rate_limit !== undefined) searchParams.set('rate_limit', String(params.rate_limit));
+    if (params.rate_window !== undefined) searchParams.set('rate_window', String(params.rate_window));
+
+    const url = buildEndpointUrl(`techstorage/${encodeURIComponent(storageId)}`, searchParams.toString());
+
+    try {
+      const res = await resilientFetch(url, {
+        method: 'PATCH',
+        headers: getRequestHeaders(),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(parseApiError(errJson, `Failed to update TechStorage space (${res.status})`));
+      }
+
+      api.invalidateCache('techstorages');
+      return await res.json();
+    } catch (err) {
+      throw new Error(parseApiError(err, 'Failed to update TechStorage space'));
+    }
+  },
+
+  /**
+   * POST /techstorage/{storage_id}/revoke
+   * Revokes / disables a TechStorage space API access
+   */
+  async revokeTechStorage(storageId: string): Promise<void> {
+    const url = buildEndpointUrl(`techstorage/${encodeURIComponent(storageId)}/revoke`);
+    try {
+      const res = await resilientFetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(parseApiError(errJson, `Failed to revoke TechStorage space (${res.status})`));
+      }
+
+      api.invalidateCache('techstorages');
+    } catch (err) {
+      throw new Error(parseApiError(err, 'Failed to revoke TechStorage space'));
+    }
+  },
+
+  /**
+   * POST /techstorage/{storage_id}/restore
+   * Restores / re-enables a revoked TechStorage space API access
+   */
+  async restoreTechStorage(storageId: string): Promise<void> {
+    const url = buildEndpointUrl(`techstorage/${encodeURIComponent(storageId)}/restore`);
+    try {
+      const res = await resilientFetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(parseApiError(errJson, `Failed to restore TechStorage space (${res.status})`));
+      }
+
+      api.invalidateCache('techstorages');
+    } catch (err) {
+      throw new Error(parseApiError(err, 'Failed to restore TechStorage space'));
+    }
   },
 };
 

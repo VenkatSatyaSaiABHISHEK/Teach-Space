@@ -64,8 +64,57 @@ export type SortField = 'name' | 'size' | 'date';
 export type SortOrder = 'asc' | 'desc';
 
 export interface ActiveNavTab {
-  tab: 'dashboard' | 'files' | 'shared' | 'storage' | 'workspaces' | 'settings';
+  tab: 'dashboard' | 'files' | 'shared' | 'storage' | 'workspaces' | 'techstorage' | 'settings';
 }
+
+export interface TechStoragePermissions {
+  read: boolean;
+  upload: boolean;
+  create_folder: boolean;
+  delete: boolean;
+}
+
+export interface TechStorageItem {
+  id?: number;
+  storage_id: string;
+  name: string;
+  drive_uuid: string;
+  folder_path: string;
+  rate_limit: number;
+  rate_window: number;
+  permissions: TechStoragePermissions;
+  enabled: boolean;
+  created_at?: string;
+  status?: 'online' | 'offline' | string;
+}
+
+export interface CreateTechStorageParams {
+  name: string;
+  drive_uuid: string;
+  folder_path?: string;
+  read_enabled?: boolean;
+  upload_enabled?: boolean;
+  create_folder_enabled?: boolean;
+  delete_enabled?: boolean;
+  rate_limit?: number;
+  rate_window?: number;
+}
+
+export interface CreateTechStorageResponse extends TechStorageItem {
+  api_key: string;
+  api_key_warning?: string;
+}
+
+export interface UpdateTechStorageParams {
+  name?: string;
+  read_enabled?: boolean;
+  upload_enabled?: boolean;
+  create_folder_enabled?: boolean;
+  delete_enabled?: boolean;
+  rate_limit?: number;
+  rate_window?: number;
+}
+
 
 export interface ToastMessage {
   id: string;

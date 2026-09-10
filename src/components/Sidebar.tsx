@@ -19,6 +19,7 @@ import {
   RefreshCw,
   X,
   Briefcase,
+  Database,
 } from 'lucide-react';
 import { ActiveNavTab } from '@/types';
 
@@ -52,6 +53,7 @@ export function Sidebar({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'files', label: 'My Files', icon: FolderClosed },
     { id: 'workspaces', label: 'Workspaces', icon: Briefcase },
+    { id: 'techstorage', label: 'TechStorage', icon: Database },
     { id: 'shared', label: 'Shared', icon: Share2 },
     { id: 'storage', label: 'Storage', icon: HardDrive },
     { id: 'settings', label: 'Settings', icon: Settings },
@@ -114,7 +116,8 @@ export function Sidebar({
               const Icon = item.icon;
               const isItemActive =
                 (item.id === 'workspaces' && pathname.startsWith('/workspaces')) ||
-                (currentTab === item.id && (item.id !== 'workspaces' || pathname === '/'));
+                (item.id === 'techstorage' && pathname.startsWith('/techstorage')) ||
+                (currentTab === item.id && (item.id !== 'workspaces' && item.id !== 'techstorage' || pathname === '/'));
 
               return (
                 <button
@@ -126,6 +129,9 @@ export function Sidebar({
                     } else if (item.id === 'workspaces') {
                       router.push('/workspaces');
                       onTabChange('workspaces');
+                    } else if (item.id === 'techstorage') {
+                      router.push('/techstorage');
+                      onTabChange('techstorage');
                     } else {
                       if (pathname !== '/') {
                         router.push('/');
